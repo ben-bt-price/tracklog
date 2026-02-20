@@ -27,12 +27,62 @@ const WMO_CODES = { 0:"Clear",1:"Mainly Clear",2:"Partly Cloudy",3:"Overcast",45
 const WMO_EMOJI = { 0:"☀️",1:"🌤",2:"⛅",3:"☁️",45:"🌫️",48:"🌫️",51:"🌦",53:"🌦",55:"🌧️",61:"🌧️",63:"🌧️",65:"🌧️",71:"🌨️",73:"🌨️",75:"❄️",80:"🌦",81:"🌧️",82:"⛈️",95:"⛈️" };
 const WIND_DIRS = ["N","NE","E","SE","S","SW","W","NW"];
 
+// Classify pressure delta (inHg/3hr) into a trend label
+function classifyPressureTrend(deltaInHg) {
+  if (deltaInHg >= 0.06)  return "Rapid Rise";
+  if (deltaInHg >= 0.02)  return "Slow Rise";
+  if (deltaInHg <= -0.06) return "Rapid Fall";
+  if (deltaInHg <= -0.02) return "Slow Fall";
+  return "Steady";
+}
+
+const TREND_EMOJI = { "Rapid Rise":"⬆⬆", "Slow Rise":"⬆", "Steady":"➡", "Slow Fall":"⬇", "Rapid Fall":"⬇⬇" };
+
 async function fetchWeather(lat, lng) {
   try {
-    const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,wind_speed_10m,wind_direction_10m,surface_pressure,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph&pressure_msl=hPa`);
+    // Fetch current conditions + last 6 hours of hourly pressure for trend calc
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+      `&current=temperature_2m,wind_speed_10m,wind_direction_10m,surface_pressure,weather_code` +
+      `&hourly=surface_pressure&temperature_unit=fahrenheit&wind_speed_unit=mph&pressure_msl=hPa` +
+      `&forecast_days=1&past_days=1`;
+    const res = await fetch(url);
     const data = await res.json();
     const c = data.current;
-    return { condition:WMO_CODES[c.weather_code]||"Clear", emoji:WMO_EMOJI[c.weather_code]||"🌤", temp:Math.round(c.temperature_2m), wind:Math.round(c.wind_speed_10m), windDir:WIND_DIRS[Math.round(c.wind_direction_10m/45)%8], pressure:(c.surface_pressure*0.02953).toFixed(2), live:true };
+    const currentPressureHpa = c.surface_pressure;
+    const currentPressureInHg = currentPressureHpa * 0.02953;
+
+    // Find the pressure reading ~3 hours ago from hourly data
+    let pressureTrend = "Steady";
+    let pressureDelta = null;
+    try {
+      const hours = data.hourly.time;         // ISO strings
+      const pressures = data.hourly.surface_pressure; // hPa
+      const nowMs = now.getTime();
+      const threeHrAgoMs = nowMs - 3 * 60 * 60 * 1000;
+      // Find closest hourly reading to 3hr ago
+      let bestIdx = 0, bestDiff = Infinity;
+      hours.forEach((h, i) => {
+        const diff = Math.abs(new Date(h).getTime() - threeHrAgoMs);
+        if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+      });
+      const oldPressureInHg = pressures[bestIdx] * 0.02953;
+      pressureDelta = currentPressureInHg - oldPressureInHg;
+      pressureTrend = classifyPressureTrend(pressureDelta);
+    } catch {}
+
+    return {
+      condition: WMO_CODES[c.weather_code]||"Clear",
+      emoji:     WMO_EMOJI[c.weather_code]||"🌤",
+      temp:      Math.round(c.temperature_2m),
+      wind:      Math.round(c.wind_speed_10m),
+      windDir:   WIND_DIRS[Math.round(c.wind_direction_10m/45)%8],
+      pressure:  currentPressureInHg.toFixed(2),
+      pressureTrend,
+      pressureDelta: pressureDelta !== null ? pressureDelta.toFixed(3) : null,
+      live: true,
+    };
   } catch { return null; }
 }
 
@@ -132,37 +182,129 @@ const MAP_LAYERS = {
 // ─── Default data ─────────────────────────────────────────────────────────────
 const DEFAULT_PROPERTIES = [
   { id:"prop1", name:"Johnson Farm", centerLat:null, centerLng:null,
-    stands:[
-      {name:"North Ridge Stand",lat:38.2420,lng:-92.4510},
-      {name:"Creek Bottom",lat:38.2310,lng:-92.4620},
-      {name:"Oak Flat",lat:38.2380,lng:-92.4480},
-    ],
+    stands:[{name:"North Ridge Stand",lat:38.242,lng:-92.451},{name:"Creek Bottom",lat:38.231,lng:-92.462},{name:"Oak Flat",lat:38.238,lng:-92.448},{name:"Ladder Stand South",lat:38.229,lng:-92.454},{name:"Fence Row East",lat:38.245,lng:-92.4455},{name:"Pond Dam Stand",lat:38.2355,lng:-92.4585}],
     cameras:[
       {id:"cam1",name:"Oak Scrape Cam",lat:38.2395,lng:-92.4495,make:"Browning",notes:"Facing north scrape"},
       {id:"cam2",name:"Creek Crossing Cam",lat:38.2318,lng:-92.4608,make:"SpyPoint",notes:""},
     ],
   },
   { id:"prop2", name:"River Bottoms", centerLat:null, centerLng:null,
-    stands:[
-      {name:"South Field Edge",lat:38.1270,lng:-92.5550},
-      {name:"Pinch Point",lat:38.1450,lng:-92.5600},
-      {name:"Big Timber",lat:38.1340,lng:-92.5430},
-    ],
+    stands:[{name:"South Field Edge",lat:38.127,lng:-92.555},{name:"Pinch Point",lat:38.145,lng:-92.56},{name:"Big Timber",lat:38.134,lng:-92.543},{name:"River Bend",lat:38.118,lng:-92.551},{name:"Hardwood Hollow",lat:38.139,lng:-92.548},{name:"Saddle Stand",lat:38.142,lng:-92.556}],
     cameras:[],
   },
 ];
 
 const SAMPLE_SIGHTINGS = [
-  { id:1, propertyId:"prop1", date:"2024-11-08", time:"06:42", timeOfDay:"Early Morning", stand:"North Ridge Stand", location:{lat:38.242,lng:-92.451}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting","Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:34,wind:8,windDir:"NW",pressure:"30.12",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Big 10-pointer working a scrape line" },
-  { id:2, propertyId:"prop1", date:"2024-11-05", time:"17:15", timeOfDay:"Evening", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Feeding"]},{type:"fawn",count:2,behaviors:["Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:48,wind:5,windDir:"S",pressure:"29.78",live:false}, moon:getMoonPhase("2024-11-05"), notes:"Family group in the clover plot" },
-  { id:3, propertyId:"prop2", date:"2024-10-28", time:"06:15", timeOfDay:"Early Morning", stand:"Pinch Point", location:{lat:38.145,lng:-92.560}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:2,behaviors:["Moving","Sparring"]}], weather:{condition:"Clear",emoji:"☀️",temp:41,wind:12,windDir:"NW",pressure:"30.45",live:false}, moon:getMoonPhase("2024-10-28"), notes:"Two young bucks sparring near scrape" },
+  { id:1, propertyId:"prop1", date:"2024-11-08", time:"06:42", timeOfDay:"Early Morning", stand:"North Ridge Stand", location:{lat:38.242,lng:-92.451}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting","Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:34,wind:8,windDir:"NW",pressure:"30.12",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Big 10-pointer working a scrape line" },
+  { id:2, propertyId:"prop1", date:"2024-11-05", time:"17:15", timeOfDay:"Evening", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Feeding"]},{type:"fawn",count:2,behaviors:["Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:48,wind:5,windDir:"S",pressure:"29.78",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-05"), notes:"Family group in the clover plot" },
+  { id:3, propertyId:"prop2", date:"2024-10-28", time:"06:15", timeOfDay:"Early Morning", stand:"Pinch Point", location:{lat:38.145,lng:-92.560}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:2,behaviors:["Moving","Sparring"]}], weather:{condition:"Clear",emoji:"☀️",temp:41,wind:12,windDir:"NW",pressure:"30.45",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-28"), notes:"Two young bucks sparring near scrape" },
+  { id:10, propertyId:"prop1", date:"2024-11-08", time:"21:00", timeOfDay:"Night", stand:"Oak Flat", location:{lat:38.2392,lng:-92.4469}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Bedding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Bedding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:40,wind:4,windDir:"N",pressure:"30.23",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Super foggy, could hear deer but barely see" },
+  { id:11, propertyId:"prop1", date:"2024-11-08", time:"21:00", timeOfDay:"Night", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Feeding","Bedding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:62,wind:9,windDir:"E",pressure:"30.01",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Small doe group, one fawn still spotted" },
+  { id:12, propertyId:"prop1", date:"2024-11-15", time:"15:30", timeOfDay:"Afternoon", stand:"Creek Bottom", location:{lat:38.2325,lng:-92.4598}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Alert","Sparring","Bedding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Moving"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:59,wind:14,windDir:"NW",pressure:"29.66",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Mature buck staging before dark" },
+  { id:13, propertyId:"prop1", date:"2024-11-25", time:"07:30", timeOfDay:"Morning", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Alert"]}], weather:{condition:"Overcast",emoji:"☁️",temp:32,wind:14,windDir:"W",pressure:"30.16",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-25"), notes:"Two does feeding steadily for 40 minutes" },
+  { id:14, propertyId:"prop1", date:"2024-09-22", time:"12:10", timeOfDay:"Midday", stand:"Fence Row East", location:{lat:38.2456,lng:-92.4456}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Moving","Alert"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:60,wind:5,windDir:"S",pressure:"30.43",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Family group feeding in the clover plot" },
+  { id:15, propertyId:"prop1", date:"2024-10-18", time:"16:00", timeOfDay:"Afternoon", stand:"Oak Flat", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Bedding"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving","Sparring"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:31,wind:9,windDir:"NE",pressure:"29.59",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Wind switched but deer kept moving" },
+  { id:16, propertyId:"prop1", date:"2024-11-20", time:"16:00", timeOfDay:"Afternoon", stand:"Ladder Stand South", location:{lat:38.2312,lng:-92.4566}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting"]},{type:"doe",count:1,behaviors:["Moving"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:56,wind:5,windDir:"SE",pressure:"29.75",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-20"), notes:"Great morning, lots of movement" },
+  { id:17, propertyId:"prop1", date:"2024-12-08", time:"12:10", timeOfDay:"Midday", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Bedding","Feeding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Overcast",emoji:"☁️",temp:41,wind:19,windDir:"E",pressure:"30.30",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Small doe group, one fawn still spotted" },
+  { id:18, propertyId:"prop1", date:"2024-10-05", time:"06:28", timeOfDay:"Early Morning", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Alert","Moving"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Sparring","Rutting"]},{type:"doe",count:1,behaviors:["Feeding"]}], weather:{condition:"Overcast",emoji:"☁️",temp:49,wind:5,windDir:"SE",pressure:"29.71",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Cold front moved in overnight, deer on their feet" },
+  { id:19, propertyId:"prop1", date:"2024-10-12", time:"05:45", timeOfDay:"Early Morning", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Feeding"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Sparring"]}], weather:{condition:"Overcast",emoji:"☁️",temp:28,wind:14,windDir:"S",pressure:"30.52",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Heavy rutting activity, chasing does" },
+  { id:20, propertyId:"prop1", date:"2024-11-15", time:"18:00", timeOfDay:"Evening", stand:"Fence Row East", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Feeding","Alert"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:38,wind:3,windDir:"NE",pressure:"30.44",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Small doe group, one fawn still spotted" },
+  { id:21, propertyId:"prop1", date:"2024-10-25", time:"12:10", timeOfDay:"Midday", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Bedding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:48,wind:9,windDir:"S",pressure:"29.94",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-25"), notes:"Three does and twin fawns" },
+  { id:22, propertyId:"prop1", date:"2024-09-22", time:"06:55", timeOfDay:"Early Morning", stand:"Oak Flat", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Feeding","Bedding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:43,wind:13,windDir:"S",pressure:"29.67",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Does nervous, must be a buck nearby" },
+  { id:23, propertyId:"prop1", date:"2024-09-15", time:"15:30", timeOfDay:"Afternoon", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Rutting"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Bedding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:44,wind:18,windDir:"NW",pressure:"29.78",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Two bucks shadowing a doe group" },
+  { id:24, propertyId:"prop1", date:"2024-09-15", time:"19:05", timeOfDay:"Evening", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Feeding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:32,wind:6,windDir:"N",pressure:"30.42",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Doe group moving along the creek" },
+  { id:25, propertyId:"prop1", date:"2024-10-12", time:"19:05", timeOfDay:"Evening", stand:"Ladder Stand South", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Alert"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:37,wind:9,windDir:"E",pressure:"30.57",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Does working the persimmons hard" },
+  { id:26, propertyId:"prop1", date:"2024-10-05", time:"07:30", timeOfDay:"Morning", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Bedding"]},{type:"doe",count:2,behaviors:["Alert","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:52,wind:3,windDir:"NW",pressure:"29.74",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Quiet until the sun hit the ridge" },
+  { id:27, propertyId:"prop1", date:"2024-10-25", time:"15:30", timeOfDay:"Afternoon", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Sparring","Rutting","Alert"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Feeding"]},{type:"doe",count:3,behaviors:["Feeding","Alert"]}], weather:{condition:"Clear",emoji:"☀️",temp:44,wind:7,windDir:"S",pressure:"29.54",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-25"), notes:"Wind switched but deer kept moving" },
+  { id:28, propertyId:"prop1", date:"2024-10-18", time:"15:30", timeOfDay:"Afternoon", stand:"Fence Row East", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Alert","Moving","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:35,wind:11,windDir:"S",pressure:"30.23",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Big 8-pointer working the scrape line" },
+  { id:29, propertyId:"prop1", date:"2024-10-12", time:"21:00", timeOfDay:"Night", stand:"Pond Dam Stand", location:{lat:38.2331,lng:-92.4558}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Alert"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:57,wind:16,windDir:"NW",pressure:"30.24",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Does came in from the east field" },
+  { id:30, propertyId:"prop1", date:"2024-12-15", time:"13:05", timeOfDay:"Midday", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Bedding","Alert"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:37,wind:2,windDir:"N",pressure:"29.77",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Small doe group, one fawn still spotted" },
+  { id:31, propertyId:"prop1", date:"2024-11-20", time:"05:12", timeOfDay:"Early Morning", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Moving","Bedding"]}], weather:{condition:"Overcast",emoji:"☁️",temp:42,wind:7,windDir:"NW",pressure:"29.56",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-11-20"), notes:"Doe led the fawns through the timber" },
+  { id:32, propertyId:"prop1", date:"2024-12-15", time:"21:00", timeOfDay:"Night", stand:"Pond Dam Stand", location:{lat:38.2344,lng:-92.4583}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Bedding","Alert"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:55,wind:19,windDir:"NW",pressure:"30.49",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Quiet until the sun hit the ridge" },
+  { id:33, propertyId:"prop1", date:"2024-11-01", time:"06:55", timeOfDay:"Early Morning", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Moving"]}], weather:{condition:"Overcast",emoji:"☁️",temp:37,wind:8,windDir:"NE",pressure:"29.96",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Doe led the fawns through the timber" },
+  { id:34, propertyId:"prop1", date:"2024-11-25", time:"16:45", timeOfDay:"Afternoon", stand:"Ladder Stand South", location:{lat:38.2301,lng:-92.4546}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Moving","Bedding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:50,wind:11,windDir:"W",pressure:"30.44",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-25"), notes:"Does working the persimmons hard" },
+  { id:35, propertyId:"prop1", date:"2024-11-15", time:"17:38", timeOfDay:"Evening", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving","Rutting"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Moving"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:62,wind:2,windDir:"W",pressure:"30.15",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Buck hit the scrape twice in 20 minutes" },
+  { id:36, propertyId:"prop1", date:"2024-09-15", time:"12:10", timeOfDay:"Midday", stand:"North Ridge Stand", location:{lat:38.2440,lng:-92.4503}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting"]}], weather:{condition:"Overcast",emoji:"☁️",temp:29,wind:19,windDir:"N",pressure:"30.60",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Solo buck cruising the ridge" },
+  { id:37, propertyId:"prop1", date:"2024-12-15", time:"06:55", timeOfDay:"Early Morning", stand:"Ladder Stand South", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Moving"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Sparring","Alert"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:35,wind:20,windDir:"SE",pressure:"30.01",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Heavy frost, deer feeding aggressively" },
+  { id:38, propertyId:"prop1", date:"2024-11-20", time:"08:20", timeOfDay:"Morning", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Alert","Feeding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:47,wind:21,windDir:"NE",pressure:"30.38",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-11-20"), notes:"Small doe group, one fawn still spotted" },
+  { id:39, propertyId:"prop1", date:"2024-11-01", time:"17:38", timeOfDay:"Evening", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Alert","Moving"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:55,wind:7,windDir:"S",pressure:"30.18",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Three does and twin fawns" },
+  { id:40, propertyId:"prop1", date:"2024-10-05", time:"20:15", timeOfDay:"Night", stand:"Fence Row East", location:{lat:38.2453,lng:-92.4454}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Bedding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:52,wind:12,windDir:"N",pressure:"30.04",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Wide 10-pointer heading to the creek" },
+  { id:41, propertyId:"prop1", date:"2024-12-08", time:"06:03", timeOfDay:"Early Morning", stand:"Creek Bottom", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving","Alert"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:54,wind:17,windDir:"SE",pressure:"30.26",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Fresh rubs every 20 yards on this trail" },
+  { id:42, propertyId:"prop1", date:"2024-11-15", time:"18:22", timeOfDay:"Evening", stand:"Oak Flat", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Bedding"]}], weather:{condition:"Overcast",emoji:"☁️",temp:49,wind:13,windDir:"NW",pressure:"29.80",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Two bucks shadowing a doe group" },
+  { id:43, propertyId:"prop1", date:"2024-11-25", time:"20:15", timeOfDay:"Night", stand:"Fence Row East", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving","Feeding","Rutting"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:46,wind:5,windDir:"SE",pressure:"29.83",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-25"), notes:"Fresh rubs every 20 yards on this trail" },
+  { id:44, propertyId:"prop1", date:"2024-10-05", time:"06:28", timeOfDay:"Early Morning", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Feeding","Bedding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:46,wind:17,windDir:"NW",pressure:"29.98",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Does working the persimmons hard" },
+  { id:45, propertyId:"prop1", date:"2024-12-02", time:"13:05", timeOfDay:"Midday", stand:"North Ridge Stand", location:{lat:38.2406,lng:-92.4535}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Sparring"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Sparring","Bedding"]},{type:"doe",count:3,behaviors:["Moving"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:35,wind:19,windDir:"W",pressure:"30.17",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Wind switched but deer kept moving" },
+  { id:46, propertyId:"prop1", date:"2024-10-18", time:"07:30", timeOfDay:"Morning", stand:"Fence Row East", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Alert"]}], weather:{condition:"Clear",emoji:"☀️",temp:38,wind:2,windDir:"W",pressure:"30.00",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Does alert but settled quickly" },
+  { id:47, propertyId:"prop1", date:"2024-12-02", time:"20:15", timeOfDay:"Night", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Moving"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:55,wind:5,windDir:"SE",pressure:"30.21",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Doe led the fawns through the timber" },
+  { id:48, propertyId:"prop1", date:"2024-09-29", time:"13:05", timeOfDay:"Midday", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Sparring","Feeding"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving"]}], weather:{condition:"Overcast",emoji:"☁️",temp:45,wind:18,windDir:"NW",pressure:"29.98",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-29"), notes:"Big 8-pointer working the scrape line" },
+  { id:49, propertyId:"prop1", date:"2024-11-08", time:"20:15", timeOfDay:"Night", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Feeding","Moving"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:58,wind:18,windDir:"NW",pressure:"30.51",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Three does and twin fawns" },
+  { id:50, propertyId:"prop1", date:"2024-12-08", time:"18:00", timeOfDay:"Evening", stand:"Oak Flat", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Rutting","Sparring","Alert"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:53,wind:19,windDir:"N",pressure:"30.00",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Solo buck cruising the ridge" },
+  { id:51, propertyId:"prop1", date:"2024-09-22", time:"17:38", timeOfDay:"Evening", stand:"North Ridge Stand", location:{lat:38.2433,lng:-92.4521}, locationMethod:"gps", deer:[{type:"doe",count:4,behaviors:["Feeding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:45,wind:19,windDir:"E",pressure:"30.52",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Doe group moving along the creek" },
+  { id:52, propertyId:"prop1", date:"2024-12-02", time:"19:05", timeOfDay:"Evening", stand:"Ladder Stand South", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Bedding","Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:42,wind:5,windDir:"NW",pressure:"30.54",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Group of does feeding through at dusk" },
+  { id:53, propertyId:"prop1", date:"2024-09-29", time:"18:22", timeOfDay:"Evening", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Sparring","Alert"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:32,wind:10,windDir:"W",pressure:"29.87",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-29"), notes:"Buck sparring with small 6-pointer" },
+  { id:54, propertyId:"prop1", date:"2024-12-02", time:"19:05", timeOfDay:"Evening", stand:"Ladder Stand South", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Alert"]}], weather:{condition:"Overcast",emoji:"☁️",temp:48,wind:8,windDir:"SE",pressure:"30.13",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Small doe group, one fawn still spotted" },
+  { id:55, propertyId:"prop1", date:"2024-11-01", time:"06:55", timeOfDay:"Early Morning", stand:"Ladder Stand South", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving","Alert","Bedding"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Feeding","Bedding"]}], weather:{condition:"Clear",emoji:"☀️",temp:36,wind:18,windDir:"SW",pressure:"30.46",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Caught him chasing a doe past the stand" },
+  { id:56, propertyId:"prop1", date:"2024-10-18", time:"19:05", timeOfDay:"Evening", stand:"Ladder Stand South", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Feeding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:59,wind:19,windDir:"N",pressure:"30.18",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Doe group crossed the trail heading north" },
+  { id:57, propertyId:"prop1", date:"2024-10-12", time:"13:05", timeOfDay:"Midday", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving","Bedding","Sparring"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Alert","Sparring","Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:48,wind:3,windDir:"S",pressure:"29.89",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Bedded in the pines till last light" },
+  { id:58, propertyId:"prop1", date:"2024-10-25", time:"12:10", timeOfDay:"Midday", stand:"Pond Dam Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Alert","Moving"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Rutting","Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:57,wind:11,windDir:"E",pressure:"29.58",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-25"), notes:"Heavy frost, deer feeding aggressively" },
+  { id:59, propertyId:"prop1", date:"2024-12-08", time:"13:05", timeOfDay:"Midday", stand:"North Ridge Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Moving","Alert"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:53,wind:10,windDir:"N",pressure:"30.12",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Doe group moving along the creek" },
+  { id:70, propertyId:"prop2", date:"2024-10-25", time:"06:28", timeOfDay:"Early Morning", stand:"Saddle Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Bedding","Feeding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:58,wind:2,windDir:"SW",pressure:"30.51",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-25"), notes:"Does alert but settled quickly" },
+  { id:71, propertyId:"prop2", date:"2024-10-05", time:"06:55", timeOfDay:"Early Morning", stand:"River Bend", location:{lat:38.1207,lng:-92.5489}, locationMethod:"gps", deer:[{type:"doe",count:1,behaviors:["Bedding","Moving"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Overcast",emoji:"☁️",temp:51,wind:19,windDir:"W",pressure:"30.15",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Does alert but settled quickly" },
+  { id:72, propertyId:"prop2", date:"2024-09-22", time:"16:00", timeOfDay:"Afternoon", stand:"Hardwood Hollow", location:{lat:38.1363,lng:-92.5490}, locationMethod:"gps", deer:[{type:"doe",count:4,behaviors:["Moving"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:50,wind:3,windDir:"W",pressure:"29.80",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Family group feeding in the clover plot" },
+  { id:73, propertyId:"prop2", date:"2024-11-01", time:"20:15", timeOfDay:"Night", stand:"Pinch Point", location:{lat:38.1479,lng:-92.5598}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:41,wind:20,windDir:"SE",pressure:"30.39",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Bedded in the pines till last light" },
+  { id:74, propertyId:"prop2", date:"2024-12-02", time:"06:28", timeOfDay:"Early Morning", stand:"Saddle Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Alert"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:36,wind:2,windDir:"SW",pressure:"30.37",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Doe group crossed the trail heading north" },
+  { id:75, propertyId:"prop2", date:"2024-12-08", time:"18:22", timeOfDay:"Evening", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Feeding","Bedding"]}], weather:{condition:"Clear",emoji:"☀️",temp:56,wind:18,windDir:"SE",pressure:"30.54",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Small doe group, one fawn still spotted" },
+  { id:76, propertyId:"prop2", date:"2024-11-15", time:"06:03", timeOfDay:"Early Morning", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Alert","Moving"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:37,wind:4,windDir:"E",pressure:"29.80",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Doe group crossed the trail heading north" },
+  { id:77, propertyId:"prop2", date:"2024-12-02", time:"07:58", timeOfDay:"Morning", stand:"River Bend", location:{lat:38.1200,lng:-92.5534}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Bedding"]},{type:"doe",count:1,behaviors:["Bedding"]}], weather:{condition:"Overcast",emoji:"☁️",temp:42,wind:15,windDir:"SW",pressure:"30.41",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Slow start but picked up after 7am" },
+  { id:78, propertyId:"prop2", date:"2024-12-08", time:"16:00", timeOfDay:"Afternoon", stand:"Pinch Point", location:{lat:38.1429,lng:-92.5601}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Feeding"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Feeding","Rutting"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:31,wind:20,windDir:"SW",pressure:"30.24",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Solo buck cruising the ridge" },
+  { id:79, propertyId:"prop2", date:"2024-09-22", time:"16:00", timeOfDay:"Afternoon", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Feeding","Bedding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:35,wind:10,windDir:"SE",pressure:"30.39",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Does came in from the east field" },
+  { id:80, propertyId:"prop2", date:"2024-09-15", time:"16:45", timeOfDay:"Afternoon", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Sparring","Rutting"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:29,wind:4,windDir:"SE",pressure:"29.91",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Heavy rutting activity, chasing does" },
+  { id:81, propertyId:"prop2", date:"2024-12-15", time:"17:10", timeOfDay:"Evening", stand:"River Bend", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Bedding","Sparring"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Bedding","Feeding","Rutting"]},{type:"doe",count:1,behaviors:["Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:56,wind:15,windDir:"S",pressure:"29.74",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Super foggy, could hear deer but barely see" },
+  { id:82, propertyId:"prop2", date:"2024-09-15", time:"13:05", timeOfDay:"Midday", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Feeding","Moving"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Rutting","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:28,wind:17,windDir:"W",pressure:"29.69",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Best sit of the season so far" },
+  { id:83, propertyId:"prop2", date:"2024-11-25", time:"17:10", timeOfDay:"Evening", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Bedding"]}], weather:{condition:"Clear",emoji:"☀️",temp:53,wind:2,windDir:"SW",pressure:"29.69",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-11-25"), notes:"Doe led the fawns through the timber" },
+  { id:84, propertyId:"prop2", date:"2024-10-25", time:"15:30", timeOfDay:"Afternoon", stand:"Pinch Point", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Moving","Feeding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Bedding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:38,wind:4,windDir:"NE",pressure:"30.08",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-25"), notes:"Slow start but picked up after 7am" },
+  { id:85, propertyId:"prop2", date:"2024-10-25", time:"17:38", timeOfDay:"Evening", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Bedding","Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:56,wind:20,windDir:"SW",pressure:"30.45",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-25"), notes:"Heavy rutting activity, chasing does" },
+  { id:86, propertyId:"prop2", date:"2024-11-15", time:"17:38", timeOfDay:"Evening", stand:"South Field Edge", location:{lat:38.1259,lng:-92.5551}, locationMethod:"gps", deer:[{type:"doe",count:4,behaviors:["Feeding","Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:51,wind:11,windDir:"NE",pressure:"30.21",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Doe group moving along the creek" },
+  { id:87, propertyId:"prop2", date:"2024-11-08", time:"05:45", timeOfDay:"Early Morning", stand:"River Bend", location:{lat:38.1197,lng:-92.5501}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Alert","Moving"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:49,wind:4,windDir:"E",pressure:"29.54",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Family group feeding in the clover plot" },
+  { id:88, propertyId:"prop2", date:"2024-11-01", time:"15:30", timeOfDay:"Afternoon", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Moving"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:52,wind:11,windDir:"S",pressure:"30.30",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Does working the persimmons hard" },
+  { id:89, propertyId:"prop2", date:"2024-10-12", time:"06:03", timeOfDay:"Early Morning", stand:"Big Timber", location:{lat:38.1315,lng:-92.5409}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting","Feeding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Moving"]},{type:"doe",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:52,wind:22,windDir:"SW",pressure:"30.39",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Cold front moved in overnight, deer on their feet" },
+  { id:90, propertyId:"prop2", date:"2024-09-29", time:"18:22", timeOfDay:"Evening", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving","Alert","Rutting"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:61,wind:3,windDir:"SW",pressure:"30.46",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-29"), notes:"Buck lip-curling on doe trail" },
+  { id:91, propertyId:"prop2", date:"2024-12-15", time:"17:38", timeOfDay:"Evening", stand:"Pinch Point", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Alert","Sparring"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving","Bedding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:43,wind:11,windDir:"NW",pressure:"30.49",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Bedded in the pines till last light" },
+  { id:92, propertyId:"prop2", date:"2024-10-05", time:"16:00", timeOfDay:"Afternoon", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Moving"]}], weather:{condition:"Clear",emoji:"☀️",temp:61,wind:5,windDir:"S",pressure:"29.59",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Young buck following older deer" },
+  { id:93, propertyId:"prop2", date:"2024-09-22", time:"18:22", timeOfDay:"Evening", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Moving"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:52,wind:4,windDir:"SW",pressure:"29.75",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Does nervous, must be a buck nearby" },
+  { id:94, propertyId:"prop2", date:"2024-10-18", time:"05:12", timeOfDay:"Early Morning", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"doe",count:1,behaviors:["Moving","Bedding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:44,wind:8,windDir:"E",pressure:"30.10",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Doe led the fawns through the timber" },
+  { id:95, propertyId:"prop2", date:"2024-11-15", time:"21:00", timeOfDay:"Night", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Alert","Moving","Rutting"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting","Sparring"]}], weather:{condition:"Clear",emoji:"☀️",temp:60,wind:20,windDir:"SE",pressure:"30.29",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-15"), notes:"Big 8-pointer working the scrape line" },
+  { id:96, propertyId:"prop2", date:"2024-11-20", time:"16:45", timeOfDay:"Afternoon", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Feeding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:29,wind:13,windDir:"NE",pressure:"29.88",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-20"), notes:"Does nervous, must be a buck nearby" },
+  { id:97, propertyId:"prop2", date:"2024-09-15", time:"18:00", timeOfDay:"Evening", stand:"Saddle Stand", location:{lat:38.1407,lng:-92.5538}, locationMethod:"gps", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Feeding","Sparring"]},{type:"doe",count:3,behaviors:["Alert","Feeding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:36,wind:4,windDir:"NW",pressure:"29.54",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Wind switched but deer kept moving" },
+  { id:98, propertyId:"prop2", date:"2024-11-01", time:"15:30", timeOfDay:"Afternoon", stand:"Big Timber", location:{lat:38.1315,lng:-92.5424}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Alert","Feeding","Sparring"]}], weather:{condition:"Clear",emoji:"☀️",temp:51,wind:15,windDir:"W",pressure:"30.32",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Nice 9-point working downwind" },
+  { id:99, propertyId:"prop2", date:"2024-12-15", time:"19:05", timeOfDay:"Evening", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Alert","Feeding","Bedding"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Feeding","Sparring","Alert"]},{type:"doe",count:3,behaviors:["Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:34,wind:4,windDir:"SW",pressure:"30.23",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Heavy frost, deer feeding aggressively" },
+  { id:100, propertyId:"prop2", date:"2024-09-22", time:"07:30", timeOfDay:"Morning", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Bedding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:56,wind:3,windDir:"E",pressure:"29.57",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-09-22"), notes:"Young buck following older deer" },
+  { id:101, propertyId:"prop2", date:"2024-11-20", time:"06:55", timeOfDay:"Early Morning", stand:"Hardwood Hollow", location:{lat:38.1402,lng:-92.5450}, locationMethod:"gps", deer:[{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Alert","Sparring","Rutting"]},{type:"doe",count:3,behaviors:["Bedding","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:53,wind:12,windDir:"S",pressure:"29.77",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-20"), notes:"Super foggy, could hear deer but barely see" },
+  { id:102, propertyId:"prop2", date:"2024-09-29", time:"06:28", timeOfDay:"Early Morning", stand:"Pinch Point", location:{lat:38.1430,lng:-92.5608}, locationMethod:"gps", deer:[{type:"doe",count:1,behaviors:["Alert","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:56,wind:7,windDir:"NW",pressure:"30.60",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-09-29"), notes:"Does working the persimmons hard" },
+  { id:103, propertyId:"prop2", date:"2024-09-29", time:"06:28", timeOfDay:"Early Morning", stand:"Pinch Point", location:{lat:38.1428,lng:-92.5611}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Rutting"]},{type:"doe",count:3,behaviors:["Bedding","Moving"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:43,wind:17,windDir:"N",pressure:"29.90",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-09-29"), notes:"Slow start but picked up after 7am" },
+  { id:104, propertyId:"prop2", date:"2024-10-05", time:"17:38", timeOfDay:"Evening", stand:"River Bend", location:{lat:38.1181,lng:-92.5522}, locationMethod:"gps", deer:[{type:"doe",count:2,behaviors:["Bedding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:61,wind:13,windDir:"E",pressure:"30.47",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Three does and twin fawns" },
+  { id:105, propertyId:"prop2", date:"2024-09-15", time:"15:30", timeOfDay:"Afternoon", stand:"Saddle Stand", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Feeding","Sparring","Rutting"]},{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving","Sparring","Bedding"]},{type:"doe",count:1,behaviors:["Feeding","Bedding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:50,wind:18,windDir:"S",pressure:"30.43",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-09-15"), notes:"Great morning, lots of movement" },
+  { id:106, propertyId:"prop2", date:"2024-10-12", time:"07:58", timeOfDay:"Morning", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Bedding","Feeding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Alert","Moving"]}], weather:{condition:"Overcast",emoji:"☁️",temp:29,wind:17,windDir:"S",pressure:"30.21",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Quiet until the sun hit the ridge" },
+  { id:107, propertyId:"prop2", date:"2024-12-15", time:"15:30", timeOfDay:"Afternoon", stand:"Saddle Stand", location:{lat:38.1446,lng:-92.5547}, locationMethod:"gps", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Alert","Moving"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Rutting"]},{type:"doe",count:1,behaviors:["Bedding","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:53,wind:6,windDir:"SW",pressure:"30.07",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-12-15"), notes:"Quiet until the sun hit the ridge" },
+  { id:108, propertyId:"prop2", date:"2024-12-02", time:"07:30", timeOfDay:"Morning", stand:"River Bend", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Moving"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Sparring","Alert"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:57,wind:17,windDir:"S",pressure:"30.05",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-12-02"), notes:"Super foggy, could hear deer but barely see" },
+  { id:109, propertyId:"prop2", date:"2024-11-25", time:"06:55", timeOfDay:"Early Morning", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Alert","Feeding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:51,wind:14,windDir:"SW",pressure:"29.55",pressureTrend:"Rapid Rise",pressureDelta:"0.08",live:false}, moon:getMoonPhase("2024-11-25"), notes:"Two does feeding steadily for 40 minutes" },
+  { id:110, propertyId:"prop2", date:"2024-11-25", time:"06:28", timeOfDay:"Early Morning", stand:"Pinch Point", location:null, locationMethod:"stand", deer:[{type:"doe",count:2,behaviors:["Feeding","Bedding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:53,wind:13,windDir:"SW",pressure:"30.11",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-11-25"), notes:"Group of does feeding through at dusk" },
+  { id:111, propertyId:"prop2", date:"2024-10-18", time:"06:55", timeOfDay:"Early Morning", stand:"Big Timber", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Bedding","Feeding"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]}], weather:{condition:"Light Rain",emoji:"🌧️",temp:48,wind:7,windDir:"W",pressure:"30.59",pressureTrend:"Steady",pressureDelta:"0.01",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Doe led the fawns through the timber" },
+  { id:112, propertyId:"prop2", date:"2024-10-05", time:"05:12", timeOfDay:"Early Morning", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Moving"]},{type:"fawn",count:1,behaviors:["Moving","Feeding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Alert","Moving"]}], weather:{condition:"Overcast",emoji:"☁️",temp:44,wind:22,windDir:"SE",pressure:"30.29",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-05"), notes:"Heavy frost, deer feeding aggressively" },
+  { id:113, propertyId:"prop2", date:"2024-10-18", time:"18:00", timeOfDay:"Evening", stand:"Saddle Stand", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Bedding"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:31,wind:6,windDir:"SE",pressure:"30.12",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Does came in from the east field" },
+  { id:114, propertyId:"prop2", date:"2024-11-20", time:"12:10", timeOfDay:"Midday", stand:"Hardwood Hollow", location:null, locationMethod:"stand", deer:[{type:"doe",count:3,behaviors:["Moving","Alert"]}], weather:{condition:"Overcast",emoji:"☁️",temp:40,wind:9,windDir:"S",pressure:"30.11",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-11-20"), notes:"Does came in from the east field" },
+  { id:115, propertyId:"prop2", date:"2024-11-08", time:"12:10", timeOfDay:"Midday", stand:"Big Timber", location:{lat:38.1354,lng:-92.5446}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Feeding"]},{type:"buck",age:"Young (2.5yr)",count:1,behaviors:["Feeding","Alert","Moving"]},{type:"doe",count:1,behaviors:["Alert","Feeding"]}], weather:{condition:"Clear",emoji:"☀️",temp:62,wind:14,windDir:"W",pressure:"30.40",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-11-08"), notes:"Best sit of the season so far" },
+  { id:116, propertyId:"prop2", date:"2024-11-01", time:"18:22", timeOfDay:"Evening", stand:"Pinch Point", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Moving","Alert","Sparring"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:42,wind:3,windDir:"NE",pressure:"29.95",pressureTrend:"Slow Fall",pressureDelta:"-0.03",live:false}, moon:getMoonPhase("2024-11-01"), notes:"Solo buck cruising the ridge" },
+  { id:117, propertyId:"prop2", date:"2024-10-18", time:"05:45", timeOfDay:"Early Morning", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Alert","Moving"]}], weather:{condition:"Foggy",emoji:"🌫️",temp:42,wind:19,windDir:"N",pressure:"30.50",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-10-18"), notes:"Fresh rubs every 20 yards on this trail" },
+  { id:118, propertyId:"prop2", date:"2024-12-08", time:"21:00", timeOfDay:"Night", stand:"South Field Edge", location:null, locationMethod:"stand", deer:[{type:"doe",count:4,behaviors:["Moving","Feeding"]},{type:"fawn",count:2,behaviors:["Moving","Feeding"]}], weather:{condition:"Partly Cloudy",emoji:"⛅",temp:46,wind:16,windDir:"NW",pressure:"30.48",pressureTrend:"Slow Rise",pressureDelta:"0.03",live:false}, moon:getMoonPhase("2024-12-08"), notes:"Doe group crossed the trail heading north" },
+  { id:119, propertyId:"prop2", date:"2024-10-12", time:"20:15", timeOfDay:"Night", stand:"Saddle Stand", location:{lat:38.1408,lng:-92.5547}, locationMethod:"gps", deer:[{type:"buck",age:"Mature (3.5yr+)",count:1,behaviors:["Moving"]},{type:"buck",age:"Yearling (1.5yr)",count:1,behaviors:["Feeding","Moving"]},{type:"doe",count:2,behaviors:["Moving","Bedding"]}], weather:{condition:"Mainly Clear",emoji:"🌤",temp:39,wind:21,windDir:"W",pressure:"30.41",pressureTrend:"Rapid Fall",pressureDelta:"-0.08",live:false}, moon:getMoonPhase("2024-10-12"), notes:"Quiet until the sun hit the ridge" },
 ];
 
 // ─── Sample camera photos (no real images, just metadata stubs) ───────────────
 const SAMPLE_PHOTOS = [
-  { id:"ph1", propertyId:"prop1", cameraId:"cam1", cameraName:"Oak Scrape Cam", date:"2024-11-08", time:"02:14", timeOfDay:"Night", weather:{condition:"Clear",emoji:"☀️",temp:31,wind:4,windDir:"NW",pressure:"30.15",live:false}, moon:getMoonPhase("2024-11-08"), aiAnalysis:{deer:[{type:"buck",count:1,age:"Mature (3.5yr+)",behaviors:["Moving"],antlerDescription:"Wide 8-pointer, estimated 130\" B&C",confidence:"high"}],totalDeer:1,imageQuality:"good",summary:"Mature buck moving through scrape area at night."}, notes:"", duplicate:false, imageData:null },
-  { id:"ph2", propertyId:"prop1", cameraId:"cam1", cameraName:"Oak Scrape Cam", date:"2024-11-08", time:"02:16", timeOfDay:"Night", weather:{condition:"Clear",emoji:"☀️",temp:31,wind:4,windDir:"NW",pressure:"30.15",live:false}, moon:getMoonPhase("2024-11-08"), aiAnalysis:{deer:[{type:"buck",count:1,age:"Mature (3.5yr+)",behaviors:["Moving"],antlerDescription:"Wide 8-pointer, same deer as 02:14",confidence:"high"}],totalDeer:1,imageQuality:"good",summary:"Same mature buck, 2 minutes later."}, notes:"", duplicate:true, imageData:null },
-  { id:"ph3", propertyId:"prop1", cameraId:"cam2", cameraName:"Creek Crossing Cam", date:"2024-11-06", time:"17:42", timeOfDay:"Evening", weather:{condition:"Partly Cloudy",emoji:"⛅",temp:46,wind:6,windDir:"S",pressure:"29.80",live:false}, moon:getMoonPhase("2024-11-06"), aiAnalysis:{deer:[{type:"doe",count:2,behaviors:["Moving"],antlerDescription:null,confidence:"high"},{type:"fawn",count:1,behaviors:["Moving"],antlerDescription:null,confidence:"medium"}],totalDeer:3,imageQuality:"fair",summary:"Doe with fawn crossing creek at dusk."}, notes:"", duplicate:false, imageData:null },
+  { id:"ph1", propertyId:"prop1", cameraId:"cam1", cameraName:"Oak Scrape Cam", date:"2024-11-08", time:"02:14", timeOfDay:"Night", weather:{condition:"Clear",emoji:"☀️",temp:31,wind:4,windDir:"NW",pressure:"30.15",pressureTrend:"Slow Rise",pressureDelta:"0.04",live:false}, moon:getMoonPhase("2024-11-08"), aiAnalysis:{deer:[{type:"buck",count:1,age:"Mature (3.5yr+)",behaviors:["Moving"],antlerDescription:"Wide 8-pointer, estimated 130\" B&C",confidence:"high"}],totalDeer:1,imageQuality:"good",summary:"Mature buck moving through scrape area at night."}, notes:"", duplicate:false, imageData:null },
+  { id:"ph2", propertyId:"prop1", cameraId:"cam1", cameraName:"Oak Scrape Cam", date:"2024-11-08", time:"02:16", timeOfDay:"Night", weather:{condition:"Clear",emoji:"☀️",temp:31,wind:4,windDir:"NW",pressure:"30.15",pressureTrend:"Slow Rise",pressureDelta:"0.04",live:false}, moon:getMoonPhase("2024-11-08"), aiAnalysis:{deer:[{type:"buck",count:1,age:"Mature (3.5yr+)",behaviors:["Moving"],antlerDescription:"Wide 8-pointer, same deer as 02:14",confidence:"high"}],totalDeer:1,imageQuality:"good",summary:"Same mature buck, 2 minutes later."}, notes:"", duplicate:true, imageData:null },
+  { id:"ph3", propertyId:"prop1", cameraId:"cam2", cameraName:"Creek Crossing Cam", date:"2024-11-06", time:"17:42", timeOfDay:"Evening", weather:{condition:"Partly Cloudy",emoji:"⛅",temp:46,wind:6,windDir:"S",pressure:"29.80",pressureTrend:"Rapid Fall",pressureDelta:"-0.07",live:false}, moon:getMoonPhase("2024-11-06"), aiAnalysis:{deer:[{type:"doe",count:2,behaviors:["Moving"],antlerDescription:null,confidence:"high"},{type:"fawn",count:1,behaviors:["Moving"],antlerDescription:null,confidence:"medium"}],totalDeer:3,imageQuality:"fair",summary:"Doe with fawn crossing creek at dusk."}, notes:"", duplicate:false, imageData:null },
 ];
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -188,6 +330,7 @@ export default function DeerTracker() {
   const [editingStand,  setEditingStand]  = useState(null);
   const [editStandVal,  setEditStandVal]  = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [expandedStand,  setExpandedStand]  = useState(null);
 
   // Camera management
   const [addCamOpen,    setAddCamOpen]    = useState(false);
@@ -314,13 +457,65 @@ export default function DeerTracker() {
     setConfirmDeleteProp(null);
   }
 
-  // Insights
+  // Insights — deer type filter applied throughout
+  const [deerFilter, setDeerFilter] = useState("all"); // "all" | "buck" | "doe"
+
+  function countDeer(deerArr, filter) {
+    return deerArr
+      .filter(d => filter==="all" || d.type===filter)
+      .reduce((a,d)=>a+(d.count||1),0);
+  }
+
+  const filteredSightings = propSightings.filter(s => deerFilter==="all" || s.deer.some(d=>d.type===deerFilter));
+
   const totalDeer  = propSightings.reduce((s,e)=>s+e.deer.reduce((a,d)=>a+(d.count||1),0),0);
   const buckCount  = propSightings.reduce((s,e)=>s+e.deer.filter(d=>d.type==="buck").reduce((a,d)=>a+(d.count||1),0),0);
-  const bestStands = Object.entries(propSightings.reduce((acc,s)=>{ const k=s.stand||"GPS"; acc[k]=(acc[k]||0)+s.deer.reduce((a,d)=>a+(d.count||1),0); return acc; },{})).sort((a,b)=>b[1]-a[1]);
-  const bestTimes  = Object.entries(propSightings.reduce((acc,s)=>{ acc[s.timeOfDay]=(acc[s.timeOfDay]||0)+1; return acc; },{})).sort((a,b)=>b[1]-a[1]);
-  const moonMap    = propSightings.reduce((acc,s)=>{ if(!s.moon) return acc; const k=s.moon.name; acc[k]=(acc[k]||0)+s.deer.reduce((a,d)=>a+(d.count||1),0); return acc; },{});
-  const bestMoon   = Object.entries(moonMap).sort((a,b)=>b[1]-a[1]);
+
+  const bestStands = Object.entries(filteredSightings.reduce((acc,s)=>{
+    const k=s.stand||"GPS"; acc[k]=(acc[k]||0)+countDeer(s.deer,deerFilter); return acc;
+  },{})).sort((a,b)=>b[1]-a[1]);
+
+  const bestTimes = Object.entries(filteredSightings.reduce((acc,s)=>{
+    acc[s.timeOfDay]=(acc[s.timeOfDay]||0)+countDeer(s.deer,deerFilter); return acc;
+  },{})).sort((a,b)=>b[1]-a[1]);
+
+  const moonMap = filteredSightings.reduce((acc,s)=>{
+    if(!s.moon) return acc; const k=s.moon.name; acc[k]=(acc[k]||0)+countDeer(s.deer,deerFilter); return acc;
+  },{});
+  const bestMoon = Object.entries(moonMap).sort((a,b)=>b[1]-a[1]);
+
+  // Weather correlations
+  const tempBuckets  = {"<30°F":0,"30–40°F":0,"40–50°F":0,"50–60°F":0,">60°F":0};
+  const windBuckets  = {"Calm (0–5)":0,"Light (6–12)":0,"Moderate (13–20)":0,"Strong (21+)":0};
+  const pressBuckets = {"Rapid Rise":0,"Slow Rise":0,"Steady":0,"Slow Fall":0,"Rapid Fall":0};
+  const condBuckets  = {};
+
+  filteredSightings.forEach(s=>{
+    const deer=countDeer(s.deer,deerFilter); if(!deer||!s.weather) return;
+    const t=parseFloat(s.weather.temp), w=parseFloat(s.weather.wind), p=parseFloat(s.weather.pressure);
+    if(!isNaN(t)){
+      if(t<30) tempBuckets["<30°F"]+=deer;
+      else if(t<40) tempBuckets["30–40°F"]+=deer;
+      else if(t<50) tempBuckets["40–50°F"]+=deer;
+      else if(t<60) tempBuckets["50–60°F"]+=deer;
+      else tempBuckets[">60°F"]+=deer;
+    }
+    if(!isNaN(w)){
+      if(w<=5) windBuckets["Calm (0–5)"]+=deer;
+      else if(w<=12) windBuckets["Light (6–12)"]+=deer;
+      else if(w<=20) windBuckets["Moderate (13–20)"]+=deer;
+      else windBuckets["Strong (21+)"]+=deer;
+    }
+    const trend = s.weather.pressureTrend;
+    if(trend && pressBuckets[trend] !== undefined) pressBuckets[trend]+=deer;
+    if(s.weather.condition){ condBuckets[s.weather.condition]=(condBuckets[s.weather.condition]||0)+deer; }
+  });
+
+  const bestTemp  = Object.entries(tempBuckets).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const bestWind  = Object.entries(windBuckets).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const bestPress = Object.entries(pressBuckets).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const bestCond  = Object.entries(condBuckets).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+
 
   const propHeader = (
     <div style={{ position:"relative" }} onClick={e=>e.stopPropagation()}>
@@ -375,11 +570,12 @@ export default function DeerTracker() {
               {view!=="new"&&<button onClick={startNewEntry} style={{ background:"#4a5d2d",color:"#e8dcc8",border:"none",borderRadius:8,padding:"7px 14px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"Georgia,serif",boxShadow:"0 2px 12px rgba(74,93,45,0.4)" }}>+ Log</button>}
             </div>
           </div>
-          <div style={{ fontSize:11,color:"#5a6a4a",paddingLeft:30 }}>
-            {todayMoon.emoji} {todayMoon.name} · {todayMoon.illumination}%
-            {liveWeather&&<span> · {liveWeather.emoji} {liveWeather.temp}°F {liveWeather.windDir} {liveWeather.wind}mph <span style={{color:"#3a5a3a"}}>LIVE</span></span>}
-            {weatherLoading&&<span style={{color:"#3a4a3a"}}> · fetching weather…</span>}
-          </div>
+          {(liveWeather||weatherLoading)&&(
+            <div style={{ fontSize:11,color:"#5a6a4a",paddingLeft:30 }}>
+              {liveWeather&&<span>{liveWeather.emoji} {liveWeather.temp}°F {liveWeather.windDir} {liveWeather.wind}mph <span style={{color:"#3a5a3a"}}>LIVE</span></span>}
+              {weatherLoading&&<span style={{color:"#3a4a3a"}}>Fetching weather…</span>}
+            </div>
+          )}
         </div>
       </header>
 
@@ -397,7 +593,7 @@ export default function DeerTracker() {
 
       {view!=="new"&&(
         <nav style={{ display:"flex",maxWidth:720,margin:"0 auto",padding:"0 24px",borderBottom:"1px solid rgba(255,255,255,0.06)",position:"relative",zIndex:10,overflowX:"auto" }}>
-          {[["log","Sightings"],["cameras","📷 Cameras"],["map","Map"],["insights","Insights"],["stands","Stands"]].map(([v,label])=>(
+          {[["insights","Insights"],["map","Map"],["stands","Stands"],["cameras","📷 Cameras"],["log","Sightings"]].map(([v,label])=>(
             <button key={v} onClick={()=>setView(v)} style={{ background:"none",border:"none",color:view===v?"#a8c464":"#6a7a5a",padding:"13px 14px 11px",fontSize:13,fontWeight:600,cursor:"pointer",borderBottom:view===v?"2px solid #a8c464":"2px solid transparent",fontFamily:"Georgia,serif",letterSpacing:"0.04em",transition:"color 0.2s",whiteSpace:"nowrap" }}>{label}</button>
           ))}
         </nav>
@@ -410,7 +606,7 @@ export default function DeerTracker() {
           <div>
             {liveWeather&&(
               <div style={{ background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8 }}>
-                {[[liveWeather.emoji+" "+liveWeather.condition,"Conditions"],[liveWeather.temp+"°F","Temperature"],[liveWeather.wind+"mph "+liveWeather.windDir,"Wind"],[liveWeather.pressure+'"',"Pressure"]].map(([val,label])=>(
+                {[[liveWeather.emoji+" "+liveWeather.condition,"Conditions"],[liveWeather.temp+"°F","Temperature"],[liveWeather.wind+"mph "+liveWeather.windDir,"Wind"],[liveWeather.pressure+'"' + (liveWeather.pressureTrend ? " " + (TREND_EMOJI[liveWeather.pressureTrend]||"") : ""), "Pressure Trend"]].map(([val,label])=>(
                   <div key={label} style={{ textAlign:"center" }}>
                     <div style={{ fontSize:13,fontWeight:700,color:"#c8d8a8" }}>{val}</div>
                     <div style={{ fontSize:10,color:"#4a5a3a",textTransform:"uppercase",letterSpacing:"0.08em",marginTop:1 }}>{label}</div>
@@ -455,31 +651,72 @@ export default function DeerTracker() {
         {/* ── INSIGHTS ── */}
         {view==="insights"&&(
           <div style={{ display:"flex",flexDirection:"column",gap:16 }}>
+
+            {/* Deer type toggle */}
+            <div style={{ display:"flex",gap:0,background:"rgba(255,255,255,0.04)",borderRadius:8,padding:3,alignSelf:"flex-start" }}>
+              {[["all","All Deer"],["buck","Bucks Only"],["doe","Does Only"]].map(([val,label])=>(
+                <button key={val} onClick={()=>setDeerFilter(val)} style={{ background:deerFilter===val?"rgba(168,196,100,0.15)":"none",border:deerFilter===val?"1px solid rgba(168,196,100,0.3)":"1px solid transparent",color:deerFilter===val?"#a8c464":"#6a7a5a",borderRadius:6,padding:"7px 14px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"Georgia,serif",transition:"all 0.2s",whiteSpace:"nowrap" }}>{label}</button>
+              ))}
+            </div>
+
+            {/* Recommendation */}
             <div style={{ background:"rgba(74,93,45,0.12)",border:"1px solid rgba(168,196,100,0.2)",borderRadius:12,padding:16 }}>
-              <p style={{ margin:"0 0 6px",fontSize:12,color:"#a8c464",fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase" }}>💡 Recommendation · {activeProperty?.name}</p>
-              <p style={{ margin:0,fontSize:14,color:"#c8d8a8",lineHeight:1.6 }}>
-                {propSightings.length>=2
-                  ? `Based on your data, ${bestStands[0]?.[0]} during ${bestTimes[0]?.[0]} shows the highest activity.${bestMoon[0]?` Deer movement peaks for you around the ${bestMoon[0][0]}.`:""}`
-                  : "Log more sightings to unlock predictive recommendations for this property."}
+              <p style={{ margin:"0 0 6px",fontSize:12,color:"#a8c464",fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase" }}>
+                💡 {deerFilter==="buck"?"Buck":"deerFilter"==="doe"?"Doe":"Deer"} Recommendation · {activeProperty?.name}
+              </p>
+              <p style={{ margin:0,fontSize:14,color:"#c8d8a8",lineHeight:1.7 }}>
+                {filteredSightings.length>=2 ? (
+                  <>
+                    {bestStands[0]&&<span>Your best <strong style={{color:"#a8c464"}}>{deerFilter==="buck"?"buck":"deerFilter"==="doe"?"doe":"deer"}</strong> stand is <strong style={{color:"#e8dcc8"}}>{bestStands[0][0]}</strong>. </span>}
+                    {bestTimes[0]&&<span>Peak activity is during <strong style={{color:"#e8dcc8"}}>{bestTimes[0][0]}</strong>. </span>}
+                    {bestMoon[0]&&<span>Movement peaks around the <strong style={{color:"#e8dcc8"}}>{bestMoon[0][0]}</strong>. </span>}
+                    {bestTemp[0]&&<span>You see the most activity when temps are <strong style={{color:"#e8dcc8"}}>{bestTemp[0][0]}</strong>. </span>}
+                    {bestPress[0]&&<span>Pressure <strong style={{color:"#e8dcc8"}}>{bestPress[0][0]}</strong> correlates with highest movement.</span>}
+                  </>
+                ) : "Log more sightings to unlock predictive recommendations for this property."}
               </p>
             </div>
+
+            {/* Stat cards */}
             <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12 }}>
               <StatCard label="Total Deer" value={totalDeer} icon="🦌"/>
               <StatCard label="Bucks Seen" value={buckCount} icon="🏆"/>
               <StatCard label="Hunt Sessions" value={propSightings.length} icon="📋"/>
               <StatCard label="Camera Photos" value={propPhotos.filter(p=>!p.duplicate).length} icon="📷"/>
             </div>
+
             <InsightPanel title="🎯 Top Stand Sites">
               {bestStands.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>No data yet.</p>:bestStands.slice(0,4).map(([stand,count],i)=><RankRow key={stand} rank={i+1} label={stand} value={`${count} deer`} max={bestStands[0][1]}/>)}
             </InsightPanel>
+
             <InsightPanel title="⏰ Best Times to Hunt">
-              {bestTimes.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>No data yet.</p>:bestTimes.slice(0,4).map(([time,count],i)=><RankRow key={time} rank={i+1} label={time} value={`${count} sightings`} max={bestTimes[0][1]}/>)}
+              {bestTimes.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>No data yet.</p>:bestTimes.slice(0,4).map(([time,count],i)=><RankRow key={time} rank={i+1} label={time} value={`${count} deer`} max={bestTimes[0][1]}/>)}
             </InsightPanel>
+
             <InsightPanel title="🌕 Activity by Moon Phase">
               {bestMoon.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>Log more sightings to see moon data.</p>:bestMoon.map(([phase,count],i)=><RankRow key={phase} rank={i+1} label={phase} value={`${count} deer`} max={bestMoon[0][1]}/>)}
             </InsightPanel>
+
+            {/* Weather correlations */}
+            <InsightPanel title="🌡 Best Temperature">
+              {bestTemp.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>Log more sightings with weather data.</p>:bestTemp.map(([label,count],i)=><RankRow key={label} rank={i+1} label={label} value={`${count} deer`} max={bestTemp[0][1]}/>)}
+            </InsightPanel>
+
+            <InsightPanel title="💨 Best Wind Speed">
+              {bestWind.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>No data yet.</p>:bestWind.map(([label,count],i)=><RankRow key={label} rank={i+1} label={label} value={`${count} deer`} max={bestWind[0][1]}/>)}
+            </InsightPanel>
+
+            <InsightPanel title="🔵 Pressure Trend at Sighting">
+              {bestPress.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>No data yet.</p>:bestPress.map(([label,count],i)=><RankRow key={label} rank={i+1} label={label} value={`${count} deer`} max={bestPress[0][1]}/>)}
+            </InsightPanel>
+
+            <InsightPanel title="☁️ Best Conditions">
+              {bestCond.length===0?<p style={{color:"#4a5a3a",fontSize:13,margin:0}}>No data yet.</p>:bestCond.slice(0,5).map(([label,count],i)=><RankRow key={label} rank={i+1} label={label} value={`${count} deer`} max={bestCond[0][1]}/>)}
+            </InsightPanel>
+
           </div>
         )}
+
 
         {/* ── STANDS ── */}
         {view==="stands"&&(
@@ -503,19 +740,21 @@ export default function DeerTracker() {
             )}
             <div style={{ display:"flex",flexDirection:"column",gap:8 }}>
               {stands.map((stand,i)=>{
-                const sc=propSightings.filter(s=>s.stand===stand.name).length;
-                const dc=propSightings.filter(s=>s.stand===stand.name).reduce((sum,s)=>sum+s.deer.reduce((a,d)=>a+(d.count||1),0),0);
+                const standSightings=propSightings.filter(s=>s.stand===stand.name).sort((a,b)=>b.date.localeCompare(a.date)||b.time.localeCompare(a.time));
+                const sc=standSightings.length;
+                const dc=standSightings.reduce((sum,s)=>sum+s.deer.reduce((a,d)=>a+(d.count||1),0),0);
                 const bestTime=getBestTimeForStand(stand.name,propSightings);
+                const isExpanded=expandedStand===i;
                 return (
-                  <div key={i} style={{ background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,padding:"12px 16px" }}>
+                  <div key={i} style={{ background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,overflow:"hidden" }}>
                     {editingStand===i?(
-                      <div style={{ display:"flex",gap:8,alignItems:"center" }}>
+                      <div style={{ padding:"12px 16px",display:"flex",gap:8,alignItems:"center" }}>
                         <input value={editStandVal} onChange={e=>setEditStandVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEditStand(i);if(e.key==="Escape")setEditingStand(null);}} autoFocus style={{...inputStyle,flex:1}}/>
                         <button onClick={()=>saveEditStand(i)} style={sBtnStyle("#4a5d2d","#a8c464")}>Save</button>
                         <button onClick={()=>setEditingStand(null)} style={sBtnStyle("rgba(255,255,255,0.05)","#6a7a5a")}>Cancel</button>
                       </div>
                     ):confirmDelete===i?(
-                      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",gap:8 }}>
+                      <div style={{ padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8 }}>
                         <span style={{ fontSize:13,color:"#ff8080" }}>Delete "{stand.name}"?</span>
                         <div style={{ display:"flex",gap:8 }}>
                           <button onClick={()=>deleteStand(i)} style={sBtnStyle("rgba(200,60,60,0.2)","#ff8080")}>Delete</button>
@@ -523,17 +762,61 @@ export default function DeerTracker() {
                         </div>
                       </div>
                     ):(
-                      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between" }}>
-                        <div>
-                          <div style={{ fontSize:14,fontWeight:700,color:"#e8dcc8",marginBottom:2 }}>📌 {stand.name}</div>
-                          <div style={{ fontSize:12,color:"#4a5a3a" }}>{sc} hunt{sc!==1?"s":""} · {dc} deer{stand.lat&&stand.lng?` · ${stand.lat.toFixed(3)}, ${stand.lng.toFixed(3)}`:" · no coords yet"}</div>
-                          {bestTime&&<div style={{ fontSize:12,color:"#a8c464",marginTop:2 }}>⏰ Best time: {bestTime}</div>}
+                      <>
+                        {/* Stand header row — click to expand */}
+                        <div onClick={()=>sc>0&&setExpandedStand(isExpanded?null:i)} style={{ padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:sc>0?"pointer":"default" }}>
+                          <div>
+                            <div style={{ fontSize:14,fontWeight:700,color:"#e8dcc8",marginBottom:2 }}>📌 {stand.name}</div>
+                            <div style={{ fontSize:12,color:"#4a5a3a" }}>{sc} hunt{sc!==1?"s":""} · {dc} deer{stand.lat&&stand.lng?` · ${stand.lat.toFixed(3)}, ${stand.lng.toFixed(3)}`:" · no coords yet"}</div>
+                            {bestTime&&<div style={{ fontSize:12,color:"#a8c464",marginTop:2 }}>⏰ Best time: {bestTime}</div>}
+                          </div>
+                          <div style={{ display:"flex",gap:8,alignItems:"center" }}>
+                            {sc>0&&<span style={{ fontSize:12,color:isExpanded?"#a8c464":"#4a5a3a",transition:"color 0.2s" }}>{isExpanded?"▲":"▼"}</span>}
+                            <button onClick={e=>{e.stopPropagation();setEditingStand(i);setEditStandVal(stand.name);}} style={sBtnStyle("rgba(255,255,255,0.05)","#8a9a7a")}>Edit</button>
+                            <button onClick={e=>{e.stopPropagation();setConfirmDelete(i);}} style={sBtnStyle("rgba(200,60,60,0.1)","#ff6060")}>✕</button>
+                          </div>
                         </div>
-                        <div style={{ display:"flex",gap:8 }}>
-                          <button onClick={()=>{setEditingStand(i);setEditStandVal(stand.name);}} style={sBtnStyle("rgba(255,255,255,0.05)","#8a9a7a")}>Edit</button>
-                          <button onClick={()=>setConfirmDelete(i)} style={sBtnStyle("rgba(200,60,60,0.1)","#ff6060")}>✕</button>
-                        </div>
-                      </div>
+
+                        {/* Expanded sightings list */}
+                        {isExpanded&&sc>0&&(
+                          <div style={{ borderTop:"1px solid rgba(255,255,255,0.06)",background:"rgba(0,0,0,0.2)" }}>
+                            {standSightings.map(s=>{
+                              const totalDeer=s.deer.reduce((sum,d)=>sum+(d.count||1),0);
+                              const hasBuck=s.deer.some(d=>d.type==="buck");
+                              const trend=s.weather?.pressureTrend;
+                              return (
+                                <div key={s.id} style={{ padding:"10px 16px",borderBottom:"1px solid rgba(255,255,255,0.04)",display:"flex",gap:12,alignItems:"flex-start" }}>
+                                  {/* Date/time column */}
+                                  <div style={{ minWidth:90,flexShrink:0 }}>
+                                    <div style={{ fontSize:12,fontWeight:700,color:"#c8d8a8" }}>{s.date}</div>
+                                    <div style={{ fontSize:11,color:"#4a5a3a" }}>{s.time} · {s.timeOfDay}</div>
+                                    {s.moon&&<div style={{ fontSize:11,color:"#5a6a4a",marginTop:1 }}>{s.moon.emoji} {s.moon.name}</div>}
+                                  </div>
+                                  {/* Deer column */}
+                                  <div style={{ flex:1,minWidth:0 }}>
+                                    <div style={{ fontSize:12,fontWeight:700,color:hasBuck?"#a8c464":"#8a9a7a",marginBottom:2 }}>
+                                      {s.deer.map((d,di)=><span key={di}>{di>0?", ":""}{d.count} {d.type}{d.age?` (${d.age.split(" ")[0]})`:""}{ d.behaviors?.length?" · "+d.behaviors.join(", "):""}</span>)}
+                                    </div>
+                                    {s.notes&&<div style={{ fontSize:11,color:"#5a6a4a",fontStyle:"italic",marginBottom:3 }}>"{s.notes}"</div>}
+                                    {/* Weather row */}
+                                    {s.weather&&<div style={{ fontSize:11,color:"#4a5a3a",display:"flex",flexWrap:"wrap",gap:"4px 10px" }}>
+                                      <span>{s.weather.emoji} {s.weather.condition}</span>
+                                      <span>🌡 {s.weather.temp}°F</span>
+                                      <span>💨 {s.weather.wind}mph {s.weather.windDir}</span>
+                                      {trend&&<span style={{ color:trend.includes("Rise")?"#6a9a4a":trend==="Steady"?"#5a6a4a":"#8a6a3a" }}>{TREND_EMOJI[trend]} {trend}</span>}
+                                    </div>}
+                                  </div>
+                                  {/* Deer count bubble */}
+                                  <div style={{ textAlign:"center",flexShrink:0 }}>
+                                    <div style={{ fontSize:18,fontWeight:800,color:hasBuck?"#a8c464":"#6a7a5a" }}>{totalDeer}</div>
+                                    <div style={{ fontSize:9,color:"#3a4a3a",textTransform:"uppercase",letterSpacing:"0.08em" }}>deer</div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 );
@@ -581,7 +864,7 @@ export default function DeerTracker() {
                 <div><span style={{color:"#6a7a5a"}}>Condition</span><br/><span style={{color:"#e8dcc8"}}>{form.weather.emoji} {form.weather.condition}</span></div>
                 <div><span style={{color:"#6a7a5a"}}>Temperature</span><br/><span style={{color:"#e8dcc8"}}>{form.weather.temp}°F</span></div>
                 <div><span style={{color:"#6a7a5a"}}>Wind</span><br/><span style={{color:"#e8dcc8"}}>{form.weather.wind}mph {form.weather.windDir}</span></div>
-                <div><span style={{color:"#6a7a5a"}}>Pressure</span><br/><span style={{color:"#e8dcc8"}}>{form.weather.pressure}"</span></div>
+                <div><span style={{color:"#6a7a5a"}}>Pressure</span><br/><span style={{color:"#e8dcc8"}}>{form.weather.pressure}" {form.weather.pressureTrend ? <span style={{fontSize:11,color:form.weather.pressureTrend?.includes("Rise")?"#a8c464":form.weather.pressureTrend==="Steady"?"#8a9a7a":"#c8906a"}}>{TREND_EMOJI[form.weather.pressureTrend]} {form.weather.pressureTrend}{form.weather.pressureDelta?" ("+( parseFloat(form.weather.pressureDelta)>0?"+":"")+parseFloat(form.weather.pressureDelta).toFixed(2)+'"/3hr)':""}</span> : ""}</span></div>
               </div>
             </Section>
             <Section title="🦌 Deer Groups">
@@ -976,7 +1259,7 @@ function SightingCard({ s }) {
         <div style={{ marginTop:12,paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.06)" }}>
           <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10 }}>
             <div style={{ fontSize:12 }}><span style={{ color:"#4a5a3a",textTransform:"uppercase",letterSpacing:"0.08em",fontSize:10 }}>Deer</span><div style={{ color:"#c8d8a8",marginTop:2 }}>{s.deer.map((d,i)=><div key={i}>{d.count} {d.type}{d.age?` (${d.age.split("(")[0].trim()})`:""} · {d.behaviors?.join(", ")||"—"}</div>)}</div></div>
-            <div style={{ fontSize:12 }}><span style={{ color:"#4a5a3a",textTransform:"uppercase",letterSpacing:"0.08em",fontSize:10 }}>Weather</span><div style={{ color:"#c8d8a8",marginTop:2 }}>{s.weather.emoji} {s.weather.condition}<br/>{s.weather.temp}°F · {s.weather.wind}mph {s.weather.windDir}{s.weather.live&&<span style={{color:"#4a7a3a",marginLeft:4,fontSize:10}}>LIVE</span>}</div></div>
+            <div style={{ fontSize:12 }}><span style={{ color:"#4a5a3a",textTransform:"uppercase",letterSpacing:"0.08em",fontSize:10 }}>Weather</span><div style={{ color:"#c8d8a8",marginTop:2 }}>{s.weather.emoji} {s.weather.condition}<br/>{s.weather.temp}°F · {s.weather.wind}mph {s.weather.windDir}{s.weather.pressureTrend&&<span style={{marginLeft:6,color:s.weather.pressureTrend?.includes("Rise")?"#a8c464":s.weather.pressureTrend==="Steady"?"#8a9a7a":"#c8906a",fontSize:11}}>{TREND_EMOJI[s.weather.pressureTrend]} {s.weather.pressureTrend}</span>}{s.weather.live&&<span style={{color:"#4a7a3a",marginLeft:4,fontSize:10}}>LIVE</span>}</div></div>
           </div>
           {s.moon&&<div style={{ fontSize:12,color:"#6a7a5a",marginBottom:8 }}>{s.moon.emoji} <span style={{color:"#8a9a8a"}}>{s.moon.name}</span> · {s.moon.illumination}% lit</div>}
           {s.notes&&<div style={{ fontSize:12,color:"#8a9a7a",fontStyle:"italic",lineHeight:1.5 }}>"{s.notes}"</div>}
